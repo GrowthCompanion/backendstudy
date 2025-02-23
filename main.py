@@ -20,7 +20,7 @@ if not groq_api_key:
     raise ValueError("GROQ API Key is missing. Please set it in the .env file.")
 
 # Configure Groq Model
-groq = ChatGroq(model="llama-3.3-70b-versatile")
+groq = ChatGroq(model="llama-3.1-8b-instant")
 groq_config = LLMConfig(custom_model=groq)
 
 # Initialize Educhain client
