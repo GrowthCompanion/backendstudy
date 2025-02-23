@@ -12,9 +12,8 @@ load_dotenv()
 
 # Initialize Flask app
 app = Flask(__name__)
-CORS(app)  # Enable CORS for all routes
+CORS(app)
 
-# Set up API keys securely
 groq_api_key = os.getenv("GROQ_API_KEY")
 if not groq_api_key:
     raise ValueError("GROQ API Key is missing. Please set it in the .env file.")
@@ -22,22 +21,15 @@ if not groq_api_key:
 # Configure Groq Model
 groq = ChatGroq(model="llama-3.1-8b-instant")
 groq_config = LLMConfig(custom_model=groq)
-
-# Initialize Educhain client
 client = Educhain(groq_config)
-
-# Initialize Groq's API client
 groq_client = Groq()
 
-# Function to format lesson plans properly
 def format_lesson_plan(plan_text):
-    """Format lesson plans with proper Markdown."""
-    plan_text = re.sub(r"\*\*Topic:\*\*-(.*?)\n", r"\n### **Topic:** \1\n", plan_text)  # Format Topic
-    plan_text = re.sub(r"\*\*Subtopic:\*\*-(.*?)\n", r"\n#### **Subtopic:** \1\n", plan_text)  # Format Subtopic
-    plan_text = plan_text.replace("* ", "- ")  # Convert bullet points to Markdown lists
-    return plan_text
+    plan_text = re.sub(r"\*\*Topic:\*\*-(.*?)\n", r"\n### **Topic:** \1\n", plan_text)
+    plan_text = re.sub(r"\*\*Subtopic:\*\*-(.*?)\n", r"\n#### **Subtopic:** \1\n", plan_text)
+    plan_text = plan_text.replace("* ", "- ")
+    return plan_text.strip()
 
-# Endpoint to generate a study plan
 @app.route("/generate-plan", methods=["POST"])
 def generate_plan():
     data = request.json
@@ -48,20 +40,9 @@ def generate_plan():
     if not topic or not num_days or not difficulty:
         return jsonify({"error": "Missing required fields"}), 400
 
-    # Step 1: Get raw lesson plan from Educhain
     raw_plan = client.content_engine.generate_lesson_plan(topic=topic)
+    raw_plan_content = getattr(raw_plan, 'content', str(raw_plan))
 
-    # Extract lesson plan text properly
-    if hasattr(raw_plan, 'dict'):
-        raw_plan_content = raw_plan.dict()
-    elif hasattr(raw_plan, 'content'):
-        raw_plan_content = raw_plan.content
-    elif hasattr(raw_plan, 'plan'):
-        raw_plan_content = raw_plan.plan
-    else:
-        raw_plan_content = str(raw_plan)
-
-    # Step 2: Refine the plan with Groq
     prompt = f"""
     You are a helpful assistant. Adapt the following lesson plan for {num_days} days at a {difficulty} difficulty level.
 
@@ -80,19 +61,13 @@ def generate_plan():
         ],
         model="llama-3.3-70b-versatile",
         temperature=0.5,
-        max_completion_tokens=1024,
-        top_p=1,
-        stop=None,
-        stream=False,
+        max_completion_tokens=1024
     )
 
-    # Step 3: Format and return the lesson plan
     refined_plan = chat_completion.choices[0].message.content
-    formatted_plan = format_lesson_plan(refined_plan)  # Apply formatting
-
+    formatted_plan = format_lesson_plan(refined_plan)
     return jsonify({"plan": formatted_plan})
 
-# Endpoint to generate a quiz
 @app.route("/generate-quiz", methods=["POST"])
 def generate_quiz():
     data = request.json
@@ -103,22 +78,27 @@ def generate_quiz():
     if not topic or not quiz_type or not num_questions:
         return jsonify({"error": "Missing required fields"}), 400
 
-    # Generate quiz questions
     questions = client.qna_engine.generate_questions(topic=topic, num=num_questions, question_type=quiz_type)
 
-    # Format quiz questions for response
     quiz_questions = []
     for question in questions.questions:
+        correct_option = question.answer
+        options = question.options if hasattr(question, 'options') else []
+
+        if correct_option in options:
+            correct_index = options.index(correct_option)
+        else:
+            correct_index = 0  # Default to first option if something goes wrong
+
         quiz_questions.append({
             "question": question.question,
-            "options": question.options if hasattr(question, 'options') else [],
-            "correct_answer": question.answer,
+            "options": options,
+            "correct_answer": correct_index,
             "explanation": question.explanation
         })
 
     return jsonify({"questions": quiz_questions})
 
-# Run the Flask app
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
     app.run(host='0.0.0.0', port=port)
