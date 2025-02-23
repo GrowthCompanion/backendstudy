@@ -5,3 +5,4 @@ educhain
 python-dotenv
 flask
 flask-cors
+matplotlib
