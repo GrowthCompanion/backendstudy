@@ -5,7 +5,6 @@ from dotenv import load_dotenv
 from langchain_groq import ChatGroq
 from educhain import Educhain, LLMConfig
 from groq import Groq
-import re
 
 # Load environment variables
 load_dotenv()
@@ -14,90 +13,121 @@ load_dotenv()
 app = Flask(__name__)
 CORS(app)
 
+# Set up API keys
 groq_api_key = os.getenv("GROQ_API_KEY")
 if not groq_api_key:
     raise ValueError("GROQ API Key is missing. Please set it in the .env file.")
 
-# Configure Groq Model
+# Configure Groq
 groq = ChatGroq(model="llama-3.1-8b-instant")
 groq_config = LLMConfig(custom_model=groq)
 client = Educhain(groq_config)
 groq_client = Groq()
 
-def format_lesson_plan(plan_text):
-    plan_text = re.sub(r"\*\*Topic:\*\*-(.*?)\n", r"\n### **Topic:** \1\n", plan_text)
-    plan_text = re.sub(r"\*\*Subtopic:\*\*-(.*?)\n", r"\n#### **Subtopic:** \1\n", plan_text)
-    plan_text = plan_text.replace("* ", "- ")
-    return plan_text.strip()
-
 @app.route("/generate-plan", methods=["POST"])
 def generate_plan():
-    data = request.json
-    topic = data.get("topic")
-    num_days = data.get("num_days")
-    difficulty = data.get("difficulty")
+    try:
+        data = request.json
+        topic = data.get("topic")
+        num_days = data.get("num_days")
+        difficulty = data.get("difficulty", "Medium")
 
-    if not topic or not num_days or not difficulty:
-        return jsonify({"error": "Missing required fields"}), 400
+        # Generate initial content with Groq
+        prompt = f"""
+        Create a detailed {num_days}-day study plan for {topic} at {difficulty} difficulty level.
+        Include:
+        1. Daily topics and subtopics
+        2. Learning objectives
+        3. Practice exercises
+        4. Review points
+        
+        Format the response in Markdown with clear headers and bullet points.
+        """
+        
+        chat_completion = groq_client.chat.completions.create(
+            messages=[
+                {"role": "system", "content": "You are a knowledgeable educational assistant."},
+                {"role": "user", "content": prompt}
+            ],
+            model="llama-3.3-70b-versatile",
+            temperature=0.5,
+            max_completion_tokens=1024,
+            top_p=1,
+            stream=False
+        )
 
-    raw_plan = client.content_engine.generate_lesson_plan(topic=topic)
-    raw_plan_content = getattr(raw_plan, 'content', str(raw_plan))
+        plan = chat_completion.choices[0].message.content
+        return jsonify({"plan": plan})
 
-    prompt = f"""
-    You are a helpful assistant. Adapt the following lesson plan for {num_days} days at a {difficulty} difficulty level.
-
-    Topic: {topic}
-    
-    Raw Lesson Plan:
-    {raw_plan_content}
-
-    Please structure the plan clearly and ensure it is well-distributed over {num_days} days.
-    """
-    
-    chat_completion = groq_client.chat.completions.create(
-        messages=[
-            {"role": "system", "content": "You are a helpful teaching assistant."},
-            {"role": "user", "content": prompt}
-        ],
-        model="llama-3.3-70b-versatile",
-        temperature=0.5,
-        max_completion_tokens=1024
-    )
-
-    refined_plan = chat_completion.choices[0].message.content
-    formatted_plan = format_lesson_plan(refined_plan)
-    return jsonify({"plan": formatted_plan})
+    except Exception as e:
+        print(f"Error generating plan: {str(e)}")
+        return jsonify({"error": "Failed to generate study plan", "details": str(e)}), 500
 
 @app.route("/generate-quiz", methods=["POST"])
 def generate_quiz():
-    data = request.json
-    topic = data.get("topic")
-    quiz_type = data.get("quiz_type")
-    num_questions = data.get("num_questions")
+    try:
+        data = request.json
+        topic = data.get("topic")
+        num_questions = data.get("num_questions", 5)
 
-    if not topic or not quiz_type or not num_questions:
-        return jsonify({"error": "Missing required fields"}), 400
+        # Generate quiz with Groq
+        prompt = f"""
+        Create {num_questions} multiple-choice questions about {topic}.
+        For each question, provide:
+        1. The question
+        2. Four possible answers
+        3. The correct answer index (0-3)
+        
+        Format as a list of questions with options.
+        """
 
-    questions = client.qna_engine.generate_questions(topic=topic, num=num_questions, question_type=quiz_type)
+        chat_completion = groq_client.chat.completions.create(
+            messages=[
+                {"role": "system", "content": "You are a knowledgeable educational assistant."},
+                {"role": "user", "content": prompt}
+            ],
+            model="llama-3.1-8b-instant",
+            temperature=0.5,
+            max_completion_tokens=1024,
+            top_p=1,
+            stream=False
+        )
 
-    quiz_questions = []
-    for question in questions.questions:
-        correct_option = question.answer
-        options = question.options if hasattr(question, 'options') else []
+        # Parse the response into structured questions
+        raw_response = chat_completion.choices[0].message.content
+        
+        # Simple parsing of the response into questions
+        questions = []
+        current_lines = raw_response.split('\n')
+        current_question = None
+        options = []
+        
+        for line in current_lines:
+            line = line.strip()
+            if line.startswith(('Q:', 'Question:')):
+                if current_question:
+                    questions.append({
+                        "question": current_question,
+                        "options": options[:4],
+                        "correctAnswer": 0  # Default to first option
+                    })
+                current_question = line.split(':', 1)[1].strip()
+                options = []
+            elif line.startswith(('A)', 'B)', 'C)', 'D)', 'a)', 'b)', 'c)', 'd)')):
+                options.append(line[2:].strip())
+                
+        if current_question:
+            questions.append({
+                "question": current_question,
+                "options": options[:4],
+                "correctAnswer": 0
+            })
 
-        if correct_option in options:
-            correct_index = options.index(correct_option)
-        else:
-            correct_index = 0  # Default to first option if something goes wrong
+        return jsonify({"questions": questions})
 
-        quiz_questions.append({
-            "question": question.question,
-            "options": options,
-            "correct_answer": correct_index,
-            "explanation": question.explanation
-        })
-
-    return jsonify({"questions": quiz_questions})
+    except Exception as e:
+        print(f"Error generating quiz: {str(e)}")
+        return jsonify({"error": "Failed to generate quiz", "details": str(e)}), 500
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
